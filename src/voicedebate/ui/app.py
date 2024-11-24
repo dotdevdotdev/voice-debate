@@ -32,8 +32,8 @@ KV = """
     orientation: "vertical"
     size_hint_y: None
     height: self.minimum_height
-    padding: "8dp"
-    spacing: "4dp"
+    padding: "16dp"
+    spacing: "8dp"
     
     MDLabel:
         text: root.speaker
@@ -53,17 +53,23 @@ KV = """
     MDBoxLayout:
         orientation: "vertical"
         md_bg_color: get_color_from_hex(app.theme_cls.colors['background'])
-        padding: "16dp"
-        spacing: "8dp"
+        padding: "32dp"
+        spacing: "16dp"
         
         MDBoxLayout:
             size_hint_y: None
-            height: "48dp"
-            spacing: "8dp"
+            height: "160dp"
+            spacing: "16dp"
             
             MDIconButton:
                 icon: "account-switch"
                 on_release: root.show_assistant_dialog()
+                icon_size: "96dp"
+                size_hint: None, None
+                size: "160dp", "160dp"
+            
+            Widget:
+                size_hint_x: 1
             
             MDLabel:
                 text: root.current_assistant or "Select Assistant"
@@ -78,19 +84,97 @@ KV = """
             
             MDList:
                 id: chat_layout
-                spacing: "8dp"
-                padding: "8dp"
+                spacing: "16dp"
+                padding: "16dp"
         
         MDBoxLayout:
             size_hint_y: None
-            height: "56dp"
-            spacing: "8dp"
+            height: "112dp"
+            spacing: "16dp"
             
             MDRaisedButton:
                 id: record_button
                 text: "Start Recording"
+                font_size: "48sp"
+                size_hint: (None, None)
+                size: "600dp", "160dp"
+                pos_hint: {"center_x": 0.5}
                 on_release: app.schedule_async(root.toggle_recording())
                 md_bg_color: get_color_from_hex(app.theme_cls.colors['primary'])
+
+MDScreen:
+    MDBoxLayout:
+        orientation: "vertical"
+        spacing: "48dp"
+        padding: "48dp"
+        
+        # Top bar with icons and text
+        MDBoxLayout:
+            size_hint_y: None
+            height: "160dp"
+            spacing: "24dp"
+            padding: ["24dp", "0dp"]
+            
+            # Left icon
+            MDIconButton:
+                icon: "account-switch"
+                on_release: root.show_assistant_dialog()
+                icon_size: "64dp"
+                size_hint: None, None
+                size: "120dp", "120dp"
+            
+            # Center text
+            MDLabel:
+                text: root.current_assistant or "Select Assistant"
+                theme_text_color: "Primary"
+                font_size: "48sp"
+                halign: "center"
+                valign: "center"
+            
+            # Right icon
+            MDIconButton:
+                icon: "microphone"
+                icon_size: "64dp"
+                size_hint: None, None
+                size: "120dp", "120dp"
+        
+        # Main content
+        MDLabel:
+            text: "VoiceDebate"
+            halign: "center"
+            font_style: "H2"
+            size_hint_y: None
+            height: self.texture_size[1]
+            padding_y: "48dp"
+        
+        Widget:
+            size_hint_y: 0.2
+        
+        MDBoxLayout:
+            orientation: "vertical"
+            spacing: "48dp"
+            adaptive_height: True
+            pos_hint: {"center_x": 0.5, "center_y": 0.5}
+            
+            MDRaisedButton:
+                id: assistant_button
+                text: "Select Assistant"
+                font_size: "48sp"
+                size_hint: (None, None)
+                size: "600dp", "160dp"
+                pos_hint: {"center_x": 0.5}
+                on_release: app.root.show_assistant_dialog()
+                md_bg_color: app.theme_cls.primary_color
+            
+            MDRaisedButton:
+                id: record_button
+                text: "Start Recording"
+                font_size: "48sp"
+                size_hint: (None, None)
+                size: "600dp", "160dp"
+                pos_hint: {"center_x": 0.5}
+                on_release: app.schedule_async(root.toggle_recording())
+                md_bg_color: app.theme_cls.accent_color
 """
 
 class MessageCard(MDCard):
@@ -174,19 +258,28 @@ class DebateScreen(MDScreen):
     def show_assistant_dialog(self):
         """Show dialog to select AI assistant."""
         if not self._assistant_dialog:
-            content = MDList()
-            
+            items = []
             for name in assistant_manager.list_assistants():
                 item = OneLineIconListItem(
-                    text=name,
-                    on_release=lambda x, n=name: self.select_assistant(n)
+                    text=name.title(),
+                    font_style="H3",
+                    text_color=self.theme_cls.primary_color,
+                    on_release=lambda x, n=name: self.select_assistant(n),
+                    _height="120dp",
+                    divider="Full",
+                    divider_color=self.theme_cls.primary_color
                 )
-                content.add_widget(item)
+                items.append(item)
             
             self._assistant_dialog = MDDialog(
-                title="Select Assistant",
-                type="custom",
-                content_cls=content,
+                title="Select AI Assistant",
+                title_font_size="64sp",
+                type="simple",
+                items=items,
+                size_hint=(0.9, 0.9),
+                md_bg_color=self.theme_cls.bg_dark,
+                radius=[20, 20, 20, 20],
+                elevation=10
             )
         
         self._assistant_dialog.open()
