@@ -160,11 +160,14 @@ class DebateScreen(MDScreen):
 
         Clock.schedule_once(scroll_bottom, 0.1)
 
-    async def handle_transcript(self, text: str):
+    def handle_transcript(self, text: str):
         """Handle real-time transcript updates."""
-        # Update the UI with the latest transcript
+        logger.debug(f"Handling transcript update: {text}")
         if hasattr(self, "current_transcript_label"):
+            logger.debug(f"Updating transcript label to: {text}")
             self.current_transcript_label.text = text.strip()
+        else:
+            logger.warning("current_transcript_label not found")
 
     async def toggle_recording(self):
         """Toggle audio recording state."""
@@ -183,22 +186,57 @@ class DebateScreen(MDScreen):
                 self.ids.record_button.md_bg_color = self.theme_cls.colors["primary"]
 
                 if transcription.get("text"):
-                    # Add user message
-                    self.add_message("You", transcription["text"])
+                    user_text = transcription["text"]
+                    # Add user message immediately
+                    self.add_message("You", user_text)
 
-                    # Get AI response
-                    assistant = assistant_manager.get_assistant(self.current_assistant)
-                    if assistant:
-                        response_text = await assistant.generate_response(
-                            transcription["text"]
+                    # Get AI response in the background
+                    if self.current_assistant:
+                        asyncio.create_task(
+                            self._get_and_display_ai_response(user_text)
                         )
-                        self.add_message(self.current_assistant, response_text)
 
-                        # Handle text-to-speech
-                        # [Rest of the method remains the same]
         except Exception as e:
             logger.error(f"Error in recording toggle: {e}")
             self._recording = False
+
+    async def _get_and_display_ai_response(self, user_text: str):
+        """Get and display AI response in the background."""
+        try:
+            assistant = assistant_manager.get_assistant(self.current_assistant)
+            if assistant:
+                # Show "thinking" message
+                self.add_message(self.current_assistant, "Thinking...")
+
+                # Get AI response
+                response_text = await assistant.generate_response(user_text)
+
+                # Update the "thinking" message with actual response
+                # Find and update the last message card
+                last_card = self.chat_layout.children[0]
+                if isinstance(last_card, MessageCard):
+                    last_card.message = response_text
+
+                # Synthesize and play audio
+                audio = await speech_processor.synthesize_speech(
+                    text=response_text,
+                    voice_id=assistant.config.voice_id,
+                    stability=assistant.config.voice_stability,
+                    clarity=assistant.config.voice_clarity,
+                    style=assistant.config.voice_style,
+                )
+
+                if audio:
+                    # Save audio to temporary file
+                    self._temp_audio_path.write_bytes(audio)
+
+                    # Play audio
+                    sound = SoundLoader.load(str(self._temp_audio_path))
+                    if sound:
+                        sound.play()
+
+        except Exception as e:
+            logger.error(f"Error getting AI response: {e}")
 
     def show_assistant_dialog(self):
         """Show dialog to select AI assistant."""
@@ -278,6 +316,13 @@ class VoiceDebateApp(MDApp):
     def schedule_async(self, coro):
         """Schedule an async coroutine to run in the event loop."""
         asyncio.get_event_loop().create_task(coro)
+
+    def on_stop(self):
+        """Called when the application is closing."""
+        # Ensure we clean up any running tasks
+        if hasattr(self.root, "_recording") and self.root._recording:
+            asyncio.create_task(self.root.toggle_recording())
+        return True
 
 
 def run():

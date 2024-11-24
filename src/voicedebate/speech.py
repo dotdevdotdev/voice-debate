@@ -111,23 +111,28 @@ class SpeechProcessor:
     def _on_transcript(self, *args, **kwargs):
         """Handle transcript event."""
         try:
-            # The transcript data is in kwargs['data']
-            data = kwargs.get("data", {})
-            if not data:
+            # Get the result from kwargs
+            result = kwargs.get("result")
+            if not result:
                 return
 
-            # Extract the transcript from the results
-            if data.get("type") == "Results":
-                alternatives = data.get("channel", {}).get("alternatives", [])
-                if alternatives and alternatives[0].get("transcript"):
-                    sentence = alternatives[0]["transcript"]
-                    if len(sentence) > 0:
-                        self.current_transcript = sentence
-                        if self._transcript_callback:
-                            asyncio.create_task(self._transcript_callback(sentence))
+            # Get the transcript from the result
+            transcript = result.channel.alternatives[0].transcript
+            if transcript:
+                logger.info(f"Got transcript: {transcript}")
+                self.current_transcript = transcript
+                if self._transcript_callback:
+                    # Use Kivy's Clock instead of asyncio
+                    from kivy.clock import Clock
+
+                    Clock.schedule_once(
+                        lambda dt: self._transcript_callback(transcript), 0
+                    )
+
         except Exception as e:
-            logger.error(f"Error handling transcript: {e}")
-            logger.error(f"Transcript data: {kwargs}")
+            logger.error(f"Error handling transcript: {e}", exc_info=True)
+            logger.error(f"Args: {args}")
+            logger.error(f"Kwargs: {kwargs}")
 
     def _on_error(self, *args, **kwargs):
         """Handle error event."""
