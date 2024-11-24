@@ -6,127 +6,151 @@ import numpy as np
 import sounddevice as sd
 import requests
 import io
+import wave
+from scipy import signal
 from deepgram import (
     DeepgramClient,
-    PrerecordedOptions,
-    FileSource
+    DeepgramClientOptions,
+    LiveTranscriptionEvents,
+    LiveOptions,
+    Microphone,
 )
 from voicedebate.config import config
 
 logger = logging.getLogger(__name__)
 
-# Configure API keys
-deepgram = DeepgramClient(config.api.deepgram_api_key)
+# Configure API keys with options
+dg = DeepgramClient(
+    api_key=config.api.deepgram_api_key,
+)
 
-class AudioCapture:
-    """Audio capture handler."""
-    
-    def __init__(self, sample_rate=16000, channels=1, dtype=np.int16):
-        self.sample_rate = sample_rate
-        self.channels = channels
-        self.dtype = dtype
-        self.stream = None
-        self.recording = False
-        self._buffer = []
-        
-    async def start_recording(self):
-        """Start recording audio."""
-        if self.recording:
-            return
-        
-        self.recording = True
-        self._buffer = []
-        
-        def callback(indata, frames, time, status):
-            if status:
-                logger.warning(f"Audio callback status: {status}")
-            if self.recording:
-                self._buffer.append(indata.copy())
-        
-        self.stream = sd.InputStream(
-            samplerate=self.sample_rate,
-            channels=self.channels,
-            dtype=self.dtype,
-            callback=callback
-        )
-        self.stream.start()
-    
-    async def stop_recording(self) -> np.ndarray:
-        """Stop recording and return the audio data."""
-        if not self.recording:
-            return np.array([], dtype=self.dtype)
-        
-        self.recording = False
-        if self.stream:
-            self.stream.stop()
-            self.stream.close()
-            self.stream = None
-        
-        if not self._buffer:
-            return np.array([], dtype=self.dtype)
-        
-        audio_data = np.concatenate(self._buffer)
-        self._buffer = []
-        return audio_data
 
 class SpeechProcessor:
     """Speech processing handler."""
-    
+
     API_BASE = "https://api.elevenlabs.io/v1"
     CHUNK_SIZE = 1024
-    
+    TARGET_SAMPLE_RATE = 16000
+
     def __init__(self):
-        self.audio_capture = AudioCapture()
         self._api_key = config.api.elevenlabs_api_key
         if not self._api_key:
             raise ValueError("ElevenLabs API key not found in config")
-        
+
         self._model_id = "eleven_monolingual_v1"
-    
-    async def transcribe_audio(self, audio_data: np.ndarray) -> dict:
-        """Transcribe audio data using Deepgram."""
+        self.dg_connection = None
+        self.microphone = None
+        self.current_transcript = ""
+        self._transcript_callback = None
+
+    async def start_capture(self, transcript_callback=None):
+        """Start audio capture with live transcription."""
         try:
-            # Convert audio data to bytes
-            audio_bytes = audio_data.tobytes()
-            
-            # Configure Deepgram options
-            options = PrerecordedOptions(
-                model="general",
-                language="en",
-                smart_format=True,
-                punctuate=True
+            self._transcript_callback = transcript_callback
+            self.dg_connection = dg.listen.live.v("1")
+
+            # Set up event handlers
+            self.dg_connection.on(LiveTranscriptionEvents.Open, self._on_open)
+            self.dg_connection.on(
+                LiveTranscriptionEvents.Transcript, self._on_transcript
             )
-            
-            source = FileSource(buffer=audio_bytes, mimetype="audio/raw")
-            response = await deepgram.transcribe(source, options)
-            
-            # Extract transcription results
-            alternatives = response["results"]["channels"][0]["alternatives"]
-            if alternatives:
-                result = {
-                    "text": alternatives[0]["transcript"],
-                    "confidence": alternatives[0]["confidence"],
-                    "words": alternatives[0].get("words", [])
-                }
-            else:
-                result = {"text": "", "confidence": 0.0, "words": []}
-            return result
+            self.dg_connection.on(LiveTranscriptionEvents.Error, self._on_error)
+            self.dg_connection.on(LiveTranscriptionEvents.Close, self._on_close)
+
+            # Configure transcription options
+            options = LiveOptions(
+                model="nova-2",
+                punctuate=True,
+                language="en-US",
+                encoding="linear16",
+                channels=1,
+                sample_rate=16000,
+                interim_results=True,
+                utterance_end_ms="1000",
+                vad_events=True,
+            )
+
+            # Start the connection without awaiting
+            self.dg_connection.start(options)
+            logger.info("Deepgram connection started")
+
+            # Start the microphone with the correct send method
+            self.microphone = Microphone(self.dg_connection.send)
+            self.microphone.start()
+            logger.info("Microphone started")
+
         except Exception as e:
-            logger.error(f"Transcription error: {e}")
-            return {"text": "", "confidence": 0.0, "words": []}
-    
-    async def synthesize_speech(self, text: str, voice_id: str, 
-                              stability: float = 0.5, 
-                              clarity: float = 0.75,
-                              style: float = 0.0) -> bytes:
+            logger.error(f"Error starting capture: {e}")
+            raise
+
+    async def stop_capture(self) -> tuple[np.ndarray, dict]:
+        """Stop audio capture and return final transcription."""
+        try:
+            if self.microphone:
+                self.microphone.finish()
+
+            if self.dg_connection:
+                # Don't await the finish call
+                self.dg_connection.finish()
+
+            # Return the final transcript
+            return np.array([]), {
+                "text": self.current_transcript,
+                "confidence": 1.0,
+                "words": [],
+            }
+
+        except Exception as e:
+            logger.error(f"Error stopping capture: {e}")
+            return np.array([]), {"text": "", "confidence": 0.0, "words": []}
+
+    def _on_open(self, *args, **kwargs):
+        """Handle websocket open event."""
+        logger.info("Deepgram connection opened")
+
+    def _on_transcript(self, *args, **kwargs):
+        """Handle transcript event."""
+        try:
+            # The transcript data is in kwargs['data']
+            data = kwargs.get("data", {})
+            if not data:
+                return
+
+            # Extract the transcript from the results
+            if data.get("type") == "Results":
+                alternatives = data.get("channel", {}).get("alternatives", [])
+                if alternatives and alternatives[0].get("transcript"):
+                    sentence = alternatives[0]["transcript"]
+                    if len(sentence) > 0:
+                        self.current_transcript = sentence
+                        if self._transcript_callback:
+                            asyncio.create_task(self._transcript_callback(sentence))
+        except Exception as e:
+            logger.error(f"Error handling transcript: {e}")
+            logger.error(f"Transcript data: {kwargs}")
+
+    def _on_error(self, *args, **kwargs):
+        """Handle error event."""
+        error = kwargs.get("data", {})
+        logger.error(f"Deepgram error: {error}")
+
+    def _on_close(self, *args, **kwargs):
+        """Handle websocket close event."""
+        logger.info("Deepgram connection closed")
+
+    async def synthesize_speech(
+        self,
+        text: str,
+        voice_id: str,
+        stability: float = 0.5,
+        clarity: float = 0.75,
+        style: float = 0.0,
+    ) -> bytes:
         """Synthesize speech using ElevenLabs."""
         try:
             # Set up request
             url = f"{self.API_BASE}/text-to-speech/{voice_id}/stream"
-            headers = {
-                "Accept": "application/json",
-                "xi-api-key": self._api_key
-            }
+            headers = {"Accept": "application/json", "xi-api-key": self._api_key}
             data = {
                 "text": text,
                 "model_id": self._model_id,
@@ -134,45 +158,33 @@ class SpeechProcessor:
                     "stability": stability,
                     "similarity_boost": clarity,
                     "style": style,
-                    "use_speaker_boost": True
-                }
+                    "use_speaker_boost": True,
+                },
             }
-            
+
             # Make request in thread pool since it's blocking
             def make_request():
                 response = requests.post(url, headers=headers, json=data, stream=True)
                 if not response.ok:
                     raise RuntimeError(f"ElevenLabs API error: {response.text}")
-                
+
                 # Read all chunks into bytes
                 audio_data = b""
                 for chunk in response.iter_content(chunk_size=self.CHUNK_SIZE):
                     audio_data += chunk
                 return audio_data
-            
+
             # Run in thread pool
             audio_data = await asyncio.get_event_loop().run_in_executor(
                 None, make_request
             )
-            
+
             return audio_data
-            
+
         except Exception as e:
             logger.error(f"Speech synthesis error: {e}")
             return bytes()
-    
-    async def start_capture(self):
-        """Start audio capture."""
-        await self.audio_capture.start_recording()
-    
-    async def stop_capture(self) -> tuple[np.ndarray, dict]:
-        """Stop audio capture and return audio data with transcription."""
-        audio_data = await self.audio_capture.stop_recording()
-        if len(audio_data) > 0:
-            transcription = await self.transcribe_audio(audio_data)
-        else:
-            transcription = {"text": "", "confidence": 0.0, "words": []}
-        return audio_data, transcription
+
 
 # Global speech processor instance
 speech_processor = SpeechProcessor()
