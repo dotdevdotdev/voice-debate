@@ -47,20 +47,42 @@ class Assistant:
             ]:  # Keep last 5 messages for context
                 messages.append(msg)
 
-            # Add user input
-            messages.append({"role": "user", "content": user_input})
+            # Wrap the user input with context
+            wrapped_input = (
+                "Below is a transcription of what the user said. Since this is from voice "
+                "recognition, some words might be missing or the thought might seem incomplete. "
+                "Please respond naturally as if we're having a conversation - feel free to ask "
+                "clarifying questions if needed. Keep responses concise and conversational.\n\n"
+                f"TRANSCRIPTION: {user_input}"
+            )
+
+            # Add wrapped user input
+            messages.append({"role": "user", "content": wrapped_input})
+
+            # Update system prompt to emphasize conversational nature
+            system_prompt = (
+                "You are roleplaying as a character defined below. You should respond naturally as if that character would speak.\n"
+                "IMPORTANT: Never use any action descriptions, emotes, or roleplaying indicators like *smiles*, *nods*, /me, etc. Only output direct speech.\n"
+                "- Use single short sentences with simple words\n"
+                "- Keep responses to 1-2 sentences maximum\n"
+                "- Use basic punctuation like periods and question marks\n"
+                "- No text formatting (*bold*, _italic_, etc)\n"
+                "- No special characters or complex formatting\n\n"
+                f"CHARACTER: {self.config.name}\n"
+                f"{self.config.system_prompt}\n\n"
+            )
 
             # Generate response with correct API structure
             response = await asyncio.to_thread(
                 claude.messages.create,
                 model=self.config.model,
-                system=self.config.system_prompt,  # System prompt goes here
+                system=system_prompt,
                 messages=messages,
                 temperature=self.config.temperature,
                 max_tokens=1000,
             )
 
-            # Update conversation history
+            # Update conversation history with original (unwrapped) input
             self.conversation_history.append({"role": "user", "content": user_input})
             self.conversation_history.append(
                 {"role": "assistant", "content": response.content[0].text}
@@ -129,7 +151,7 @@ class AssistantManager:
                 system_prompt=(
                     "You are Socrates, the ancient Greek philosopher known for your method of "
                     "asking probing questions to stimulate critical thinking. Engage in debate "
-                    "by questioning assumptions and helping others examine their beliefs."
+                    "by questioning assumptions and helping others examine their beliefs.\n\n"
                 ),
                 provider="claude",
                 model="claude-3-haiku-20240307",
@@ -144,7 +166,7 @@ class AssistantManager:
                 system_prompt=(
                     "You are Aristotle, the ancient Greek philosopher known for systematic "
                     "logic and empirical observation. Engage in debate by analyzing arguments "
-                    "carefully and drawing on evidence and reason."
+                    "carefully and drawing on evidence and reason.\n\n"
                 ),
                 provider="gpt",
                 model="gpt-4",
