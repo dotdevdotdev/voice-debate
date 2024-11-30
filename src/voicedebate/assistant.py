@@ -2,12 +2,15 @@
 
 import asyncio
 import logging
-from typing import Optional
+from typing import Optional, Dict, Any
 import anthropic
 import openai
 from .config import config
 from .models import AssistantConfig
 from .character_loader import load_character_configs
+import random
+from pathlib import Path
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +25,48 @@ class Assistant:
     def __init__(self, assistant_config: AssistantConfig):
         self.config = assistant_config
         self.conversation_history = []
+        self.character_data: Dict[str, Any] = {}  # Store the full character data
+        self._load_character_data()
+
+    def _load_character_data(self):
+        """Load the full character data from JSON."""
+        characters_dir = Path(__file__).parent / "data" / "characters"
+        character_file = characters_dir / f"{self.config.name.lower()}.json"
+
+        try:
+            with open(character_file, "r", encoding="utf-8") as f:
+                self.character_data = json.load(f)
+        except Exception as e:
+            logger.error(f"Error loading character data: {e}")
+
+    def _should_use_scripted_response(self) -> bool:
+        """Determine if we should use a scripted response (20% chance)."""
+        return random.random() < 0.2
+
+    def _should_use_response_starter(self) -> bool:
+        """Determine if we should use a response starter (40% chance)."""
+        return random.random() < 0.4
+
+    def _get_random_scripted_response(self) -> Optional[str]:
+        """Get a random scripted response based on context."""
+        try:
+            scripted_responses = self.character_data["character_definition"][
+                "speech_style"
+            ]["scripted_responses"]
+            category = random.choice(list(scripted_responses.keys()))
+            return random.choice(scripted_responses[category])
+        except (KeyError, IndexError):
+            return None
+
+    def _get_random_response_starter(self) -> Optional[str]:
+        """Get a random response starter."""
+        try:
+            starters = self.character_data["character_definition"]["speech_style"][
+                "response_starters"
+            ]
+            return random.choice(starters)
+        except (KeyError, IndexError):
+            return None
 
     async def generate_response(self, user_input: str) -> str:
         """Generate a response from the AI assistant."""
@@ -66,8 +111,20 @@ class Assistant:
     async def _generate_claude_response(self, current_message: dict) -> str:
         """Generate response using Claude."""
         try:
-            # Combine history with current message
             messages = self.conversation_history + [current_message]
+
+            # Decide whether to use a scripted response
+            if self._should_use_scripted_response():
+                scripted = self._get_random_scripted_response()
+                if scripted:
+                    return scripted
+
+            # Decide whether to use a response starter
+            if self._should_use_response_starter():
+                starter = self._get_random_response_starter()
+                if starter:
+                    # Add the starter as an incomplete assistant message
+                    messages.append({"role": "assistant", "content": starter})
 
             # Generate response using conversation history and system prompt
             response = await asyncio.to_thread(

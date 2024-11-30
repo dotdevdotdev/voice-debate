@@ -30,6 +30,7 @@ def load_character_configs() -> List[AssistantConfig]:
                     voice_id=data["voice"]["id"],
                     voice_stability=data["voice"]["stability"],
                     voice_clarity=data["voice"]["clarity"],
+                    voice_style=0.0,
                 )
                 configs.append(config)
                 logger.info(f"Loaded character configuration: {config.name}")
