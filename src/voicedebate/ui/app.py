@@ -23,6 +23,7 @@ from voicedebate.speech import SpeechProcessor, speech_processor
 from voicedebate.assistant import AssistantManager, assistant_manager
 import uuid
 import random
+from enum import Enum
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +139,13 @@ class MessageCard(MDCard):
     message = StringProperty()
 
 
+class ConversationState(Enum):
+    IDLE = "idle"
+    LISTENING = "listening"
+    PROCESSING = "processing"
+    RESPONDING = "responding"
+
+
 class DebateScreen(MDScreen):
     """Main debate screen."""
 
@@ -145,12 +153,16 @@ class DebateScreen(MDScreen):
     current_assistant = StringProperty("")
     _recording = False
     _assistant_dialog = None
+    _current_sound = None  # Track current playing sound
+    state = ConversationState.IDLE
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.app = None  # Will be set by VoiceDebateApp.build()
         self._recording = False
         self._assistant_dialog = None
+        self._current_sound = None
+        self.state = ConversationState.IDLE
 
     def add_message(self, speaker: str, message: str):
         """Add a message to the chat."""
@@ -177,48 +189,57 @@ class DebateScreen(MDScreen):
         """Toggle audio recording state."""
         try:
             if not self._recording:
-                await self.app.speech_processor.start_capture(self.handle_transcript)
-                self._recording = True
-                self.ids.record_button.text = "Stop Recording"
-                self.ids.record_button.md_bg_color = self.theme_cls.colors["secondary"]
+                await self.start_listening()
             else:
-                _, transcription = await self.app.speech_processor.stop_capture()
-                self._recording = False
-                self.ids.record_button.text = "Start Recording"
-                self.ids.record_button.md_bg_color = self.theme_cls.colors["primary"]
-
-                if transcription.get("text"):
-                    user_text = transcription["text"]
-                    # Add user message immediately
-                    self.add_message("You", user_text)
-
-                    # Get AI response in the background
-                    if self.current_assistant:
-                        asyncio.create_task(
-                            self._get_and_display_ai_response(user_text)
-                        )
-
+                await self.stop_listening()
         except Exception as e:
             logger.error(f"Error in recording toggle: {e}")
             self._recording = False
+
+    async def start_listening(self):
+        """Start listening for user input."""
+        self.current_transcript_label.text = "Listening..."
+        await self.app.speech_processor.start_capture(
+            transcript_callback=self.handle_transcript,
+            vad_callback=self.handle_voice_activity,
+        )
+        self._recording = True
+        self.update_state(ConversationState.LISTENING)
+
+    async def stop_listening(self):
+        """Stop listening and process the input."""
+        _, transcription = await self.app.speech_processor.stop_capture()
+        self._recording = False
+        self.update_state(ConversationState.PROCESSING)
+
+        if transcription.get("text"):
+            user_text = transcription["text"]
+            self.add_message("You", user_text)
+
+            if self.current_assistant:
+                await self._get_and_display_ai_response(user_text)
+
+    def handle_voice_activity(self, is_speaking: bool, silence_duration: float):
+        """Handle voice activity detection."""
+        if not is_speaking and silence_duration > 2.0:  # 2 seconds of silence
+            if self._recording:
+                # Schedule the stop_listening call using Kivy's Clock
+                Clock.schedule_once(
+                    lambda dt: asyncio.create_task(self.stop_listening()), 0
+                )
 
     async def _get_and_display_ai_response(self, user_text: str):
         """Get and display AI response in the background."""
         try:
             assistant = self.app.assistant_manager.get_assistant(self.current_assistant)
             if assistant:
-                # Show "thinking" message
                 self.add_message(self.current_assistant, "Thinking...")
 
-                # Get AI response
                 response_text = await assistant.generate_response(user_text)
-
-                # Update the "thinking" message with actual response
                 last_card = self.chat_layout.children[0]
                 if isinstance(last_card, MessageCard):
                     last_card.message = response_text
 
-                # Synthesize and play audio
                 audio = await self.app.speech_processor.synthesize_speech(
                     text=response_text,
                     voice_id=assistant.config.voice_id,
@@ -229,24 +250,44 @@ class DebateScreen(MDScreen):
 
                 if audio:
                     try:
-                        # Use the app's temp audio path
                         temp_path = (
                             Path(config.data_dir)
                             / f"temp_audio_{self.app.instance_id}.wav"
                         )
                         temp_path.write_bytes(audio)
 
-                        # Play audio
                         sound = SoundLoader.load(str(temp_path))
                         if sound:
+                            self._current_sound = sound
+                            sound.bind(on_stop=self._on_audio_complete)
                             sound.play()
                         else:
                             logger.error("Failed to load audio file")
+                            self._on_audio_complete()
                     except Exception as e:
                         logger.error(f"Error playing audio: {e}")
+                        self._on_audio_complete()
+                else:
+                    self._on_audio_complete()
 
         except Exception as e:
             logger.error(f"Error getting AI response: {e}")
+            self._on_audio_complete()
+
+    def _on_audio_complete(self, *args):
+        """Handle completion of audio playback."""
+        self._current_sound = None
+
+        # Add a small delay before starting to listen again
+        async def delayed_start():
+            self.current_transcript_label.text = "Starting new turn..."
+            await asyncio.sleep(1.0)  # 1 second delay
+            if (
+                self.state != ConversationState.IDLE
+            ):  # Only restart if we haven't been interrupted
+                await self.start_listening()
+
+        asyncio.create_task(delayed_start())
 
     def show_assistant_dialog(self):
         """Show dialog to select AI assistant."""
@@ -288,6 +329,8 @@ class DebateScreen(MDScreen):
         self.current_assistant = name
         if self._assistant_dialog:
             self._assistant_dialog.dismiss()
+        # Automatically start the conversation when assistant is selected
+        asyncio.create_task(self.start_listening())
 
     def clear_chat(self):
         """Clear chat history."""
@@ -296,6 +339,34 @@ class DebateScreen(MDScreen):
             assistant = self.app.assistant_manager.get_assistant(self.current_assistant)
             if assistant:
                 assistant.clear_history()
+
+    def update_state(self, new_state: ConversationState):
+        """Update conversation state and UI."""
+        self.state = new_state
+        if new_state == ConversationState.IDLE:
+            self.ids.record_button.text = "Start Recording"
+            self.ids.record_button.disabled = False
+            self.ids.record_button.md_bg_color = self.theme_cls.colors["primary"]
+        elif new_state == ConversationState.LISTENING:
+            self.ids.record_button.text = "Listening..."
+            self.ids.record_button.disabled = True
+            self.ids.record_button.md_bg_color = self.theme_cls.colors["secondary"]
+        elif new_state == ConversationState.PROCESSING:
+            self.ids.record_button.text = "Processing..."
+            self.ids.record_button.disabled = True
+        elif new_state == ConversationState.RESPONDING:
+            self.ids.record_button.text = "AI Speaking..."
+            self.ids.record_button.disabled = True
+
+    async def stop_conversation(self):
+        """Stop the ongoing conversation."""
+        if self._recording:
+            await self.stop_listening()
+        if self._current_sound:
+            self._current_sound.stop()
+            self._current_sound = None
+        self.update_state(ConversationState.IDLE)
+        self.current_transcript_label.text = ""
 
 
 class VoiceDebateApp(MDApp):
@@ -332,9 +403,19 @@ class VoiceDebateApp(MDApp):
         Window.left = random.randint(0, 200)
         Window.top = random.randint(0, 100)
 
+        # Bind escape key to stop conversation
+        Window.bind(on_key_down=self._on_keyboard_down)
+
         screen = DebateScreen()
-        screen.app = self  # Give screen access to app instance
+        screen.app = self
         return screen
+
+    def _on_keyboard_down(self, instance, keyboard, keycode, text, modifiers):
+        """Handle keyboard input."""
+        if keycode == 27:  # Escape key
+            asyncio.create_task(self.root.stop_conversation())
+            return True
+        return False
 
     def on_start(self):
         """Called when the application starts."""

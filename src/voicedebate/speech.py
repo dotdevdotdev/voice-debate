@@ -16,6 +16,7 @@ from deepgram import (
     Microphone,
 )
 from voicedebate.config import config
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,9 @@ class SpeechProcessor:
         self.transcriber = None
         self.synthesizer = None
         self._setup_services()
+        self._vad_callback = None
+        self._last_speech_time = None
+        self._is_speaking = False
 
     def _setup_services(self):
         self._api_key = config.api.elevenlabs_api_key
@@ -49,13 +53,17 @@ class SpeechProcessor:
         self.current_transcript = ""
         self._transcript_callback = None
 
-    async def start_capture(self, transcript_callback=None):
+    async def start_capture(self, transcript_callback=None, vad_callback=None):
         """Start audio capture with live transcription."""
         try:
             # Clear the transcript when starting new recording
             self.current_transcript = ""
 
             self._transcript_callback = transcript_callback
+            self._vad_callback = vad_callback
+            self._last_speech_time = None
+            self._is_speaking = False
+
             self.dg_connection = dg.listen.live.v("1")
 
             # Set up event handlers
@@ -66,7 +74,7 @@ class SpeechProcessor:
             self.dg_connection.on(LiveTranscriptionEvents.Error, self._on_error)
             self.dg_connection.on(LiveTranscriptionEvents.Close, self._on_close)
 
-            # Configure transcription options
+            # Configure transcription options with VAD
             options = LiveOptions(
                 model="nova-2",
                 punctuate=True,
@@ -120,10 +128,28 @@ class SpeechProcessor:
     def _on_transcript(self, *args, **kwargs):
         """Handle transcript event."""
         try:
-            # Get the result from kwargs
             result = kwargs.get("result")
             if not result:
                 return
+
+            # Update speech detection
+            self._is_speaking = result.speech_final
+            current_time = time.time()
+
+            if self._is_speaking:
+                self._last_speech_time = current_time
+            elif self._last_speech_time is not None:
+                silence_duration = current_time - self._last_speech_time
+                if self._vad_callback:
+                    # Use Kivy's Clock instead of asyncio for the callback
+                    from kivy.clock import Clock
+
+                    Clock.schedule_once(
+                        lambda dt: self._vad_callback(
+                            self._is_speaking, silence_duration
+                        ),
+                        0,
+                    )
 
             # Get the transcript from the result
             transcript = result.channel.alternatives[0].transcript
@@ -136,10 +162,9 @@ class SpeechProcessor:
                     self.current_transcript = self.current_transcript.strip()
 
                 if self._transcript_callback:
-                    # Use Kivy's Clock instead of asyncio
+                    # Use Kivy's Clock for transcript updates
                     from kivy.clock import Clock
 
-                    # Show current transcript + interim result in UI
                     display_text = self.current_transcript
                     if not result.is_final:
                         display_text += " " + transcript.strip()
