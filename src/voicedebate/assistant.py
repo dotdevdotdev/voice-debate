@@ -63,11 +63,10 @@ class Assistant:
             system_prompt = (
                 "You are roleplaying as a character defined below. You should respond naturally as if that character would speak.\n"
                 "IMPORTANT: Never use any action descriptions, emotes, or roleplaying indicators like *smiles*, *nods*, /me, etc. Only output direct speech.\n"
-                "- Use single short sentences with simple words\n"
-                "- Keep responses to 1-2 sentences maximum\n"
-                "- Use basic punctuation like periods and question marks\n"
-                "- No text formatting (*bold*, _italic_, etc)\n"
-                "- No special characters or complex formatting\n\n"
+                "- You MUST only respond with a single sentence or question.\n"
+                "- You MUST use basic punctuation like periods and question marks\n"
+                "- NEVER USE ANY text formatting (*bold*, _italic_, etc)\n"
+                "- NEVER USE ANY special characters or complex formatting\n\n"
                 f"CHARACTER: {self.config.name}\n"
                 f"{self.config.system_prompt}\n\n"
             )
