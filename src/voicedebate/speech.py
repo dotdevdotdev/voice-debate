@@ -46,6 +46,9 @@ class SpeechProcessor:
     async def start_capture(self, transcript_callback=None):
         """Start audio capture with live transcription."""
         try:
+            # Clear the transcript when starting new recording
+            self.current_transcript = ""
+
             self._transcript_callback = transcript_callback
             self.dg_connection = dg.listen.live.v("1")
 
@@ -120,13 +123,22 @@ class SpeechProcessor:
             transcript = result.channel.alternatives[0].transcript
             if transcript:
                 logger.info(f"Got transcript: {transcript}")
-                self.current_transcript = transcript
+
+                # Only append if this is a final result
+                if result.is_final:
+                    self.current_transcript += " " + transcript.strip()
+                    self.current_transcript = self.current_transcript.strip()
+
                 if self._transcript_callback:
                     # Use Kivy's Clock instead of asyncio
                     from kivy.clock import Clock
 
+                    # Show current transcript + interim result in UI
+                    display_text = self.current_transcript
+                    if not result.is_final:
+                        display_text += " " + transcript.strip()
                     Clock.schedule_once(
-                        lambda dt: self._transcript_callback(transcript), 0
+                        lambda dt: self._transcript_callback(display_text.strip()), 0
                     )
 
         except Exception as e:
