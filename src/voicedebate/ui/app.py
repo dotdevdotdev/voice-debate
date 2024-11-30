@@ -19,8 +19,10 @@ from kivymd.uix.card import MDCard
 from kivymd.uix.boxlayout import MDBoxLayout
 from kivymd.icon_definitions import md_icons
 from voicedebate.config import config
-from voicedebate.speech import speech_processor
-from voicedebate.assistant import assistant_manager
+from voicedebate.speech import SpeechProcessor, speech_processor
+from voicedebate.assistant import AssistantManager, assistant_manager
+import uuid
+import random
 
 logger = logging.getLogger(__name__)
 
@@ -145,8 +147,10 @@ class DebateScreen(MDScreen):
     _assistant_dialog = None
 
     def __init__(self, **kwargs):
-        self._temp_audio_path = Path(config.data_dir) / "temp_audio.wav"
         super().__init__(**kwargs)
+        self.app = None  # Will be set by VoiceDebateApp.build()
+        self._recording = False
+        self._assistant_dialog = None
 
     def add_message(self, speaker: str, message: str):
         """Add a message to the chat."""
@@ -173,14 +177,12 @@ class DebateScreen(MDScreen):
         """Toggle audio recording state."""
         try:
             if not self._recording:
-                logger.info("Starting recording...")
-                await speech_processor.start_capture(self.handle_transcript)
+                await self.app.speech_processor.start_capture(self.handle_transcript)
                 self._recording = True
                 self.ids.record_button.text = "Stop Recording"
                 self.ids.record_button.md_bg_color = self.theme_cls.colors["secondary"]
             else:
-                logger.info("Stopping recording...")
-                _, transcription = await speech_processor.stop_capture()
+                _, transcription = await self.app.speech_processor.stop_capture()
                 self._recording = False
                 self.ids.record_button.text = "Start Recording"
                 self.ids.record_button.md_bg_color = self.theme_cls.colors["primary"]
@@ -203,7 +205,7 @@ class DebateScreen(MDScreen):
     async def _get_and_display_ai_response(self, user_text: str):
         """Get and display AI response in the background."""
         try:
-            assistant = assistant_manager.get_assistant(self.current_assistant)
+            assistant = self.app.assistant_manager.get_assistant(self.current_assistant)
             if assistant:
                 # Show "thinking" message
                 self.add_message(self.current_assistant, "Thinking...")
@@ -212,13 +214,12 @@ class DebateScreen(MDScreen):
                 response_text = await assistant.generate_response(user_text)
 
                 # Update the "thinking" message with actual response
-                # Find and update the last message card
                 last_card = self.chat_layout.children[0]
                 if isinstance(last_card, MessageCard):
                     last_card.message = response_text
 
                 # Synthesize and play audio
-                audio = await speech_processor.synthesize_speech(
+                audio = await self.app.speech_processor.synthesize_speech(
                     text=response_text,
                     voice_id=assistant.config.voice_id,
                     stability=assistant.config.voice_stability,
@@ -227,13 +228,22 @@ class DebateScreen(MDScreen):
                 )
 
                 if audio:
-                    # Save audio to temporary file
-                    self._temp_audio_path.write_bytes(audio)
+                    try:
+                        # Use the app's temp audio path
+                        temp_path = (
+                            Path(config.data_dir)
+                            / f"temp_audio_{self.app.instance_id}.wav"
+                        )
+                        temp_path.write_bytes(audio)
 
-                    # Play audio
-                    sound = SoundLoader.load(str(self._temp_audio_path))
-                    if sound:
-                        sound.play()
+                        # Play audio
+                        sound = SoundLoader.load(str(temp_path))
+                        if sound:
+                            sound.play()
+                        else:
+                            logger.error("Failed to load audio file")
+                    except Exception as e:
+                        logger.error(f"Error playing audio: {e}")
 
         except Exception as e:
             logger.error(f"Error getting AI response: {e}")
@@ -242,7 +252,7 @@ class DebateScreen(MDScreen):
         """Show dialog to select AI assistant."""
         if not self._assistant_dialog:
             items = []
-            for name in assistant_manager.list_assistants():
+            for name in self.app.assistant_manager.list_assistants():
                 item = OneLineIconListItem(
                     text=name.title(),
                     font_style="H3",
@@ -283,7 +293,7 @@ class DebateScreen(MDScreen):
         """Clear chat history."""
         self.chat_layout.clear_widgets()
         if self.current_assistant:
-            assistant = assistant_manager.get_assistant(self.current_assistant)
+            assistant = self.app.assistant_manager.get_assistant(self.current_assistant)
             if assistant:
                 assistant.clear_history()
 
@@ -293,7 +303,17 @@ class VoiceDebateApp(MDApp):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.title = "VoiceDebate"
+        # Create data directory if it doesn't exist
+        Path(config.data_dir).mkdir(parents=True, exist_ok=True)
+
+        # Use global instances for now
+        self.assistant_manager = assistant_manager
+        self.speech_processor = speech_processor
+
+        # Generate unique instance ID
+        self.instance_id = str(uuid.uuid4())
+        self.title = f"VoiceDebate - {self.instance_id[:8]}"
+
         self.theme_cls.theme_style = config.theme.theme_style
         self.theme_cls.primary_palette = config.theme.primary_palette
         self.theme_cls.accent_palette = config.theme.accent_palette
@@ -307,7 +327,14 @@ class VoiceDebateApp(MDApp):
 
     def build(self):
         """Build and return the application's root widget."""
-        return DebateScreen()
+        # Set window size and position randomly to avoid overlap
+        Window.size = (1024, 1200)
+        Window.left = random.randint(0, 200)
+        Window.top = random.randint(0, 100)
+
+        screen = DebateScreen()
+        screen.app = self  # Give screen access to app instance
+        return screen
 
     def on_start(self):
         """Called when the application starts."""
@@ -319,9 +346,21 @@ class VoiceDebateApp(MDApp):
 
     def on_stop(self):
         """Called when the application is closing."""
-        # Ensure we clean up any running tasks
+        # Clean up instance-specific resources
+        temp_path = Path(config.data_dir) / f"temp_audio_{self.instance_id}.wav"
+        if temp_path.exists():
+            temp_path.unlink()
+
+        # Clean up any ongoing recording
         if hasattr(self.root, "_recording") and self.root._recording:
             asyncio.create_task(self.root.toggle_recording())
+
+        # Clean up speech processor resources
+        if self.speech_processor.microphone:
+            self.speech_processor.microphone.finish()
+        if self.speech_processor.dg_connection:
+            self.speech_processor.dg_connection.finish()
+
         return True
 
 

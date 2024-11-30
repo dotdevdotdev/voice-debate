@@ -33,6 +33,12 @@ class SpeechProcessor:
     TARGET_SAMPLE_RATE = 16000
 
     def __init__(self):
+        self.recorder = None
+        self.transcriber = None
+        self.synthesizer = None
+        self._setup_services()
+
+    def _setup_services(self):
         self._api_key = config.api.elevenlabs_api_key
         if not self._api_key:
             raise ValueError("ElevenLabs API key not found in config")
@@ -203,5 +209,5 @@ class SpeechProcessor:
             return bytes()
 
 
-# Global speech processor instance
+# Create global instance AFTER class definition
 speech_processor = SpeechProcessor()

@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional, Dict, List, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 from dataclasses import dataclass
 
 
@@ -122,10 +122,16 @@ class AssistantConfig(BaseModel):
 
     # Voice settings
     voice_id: str
-    voice_stability: float
-    voice_clarity: float
-    voice_style: float = 0.0  # Default style value for ElevenLabs
+    voice_stability: float = Field(ge=0.0, le=1.0)
+    voice_clarity: float = Field(ge=0.0, le=1.0)
+    voice_style: float = Field(default=0.0, ge=0.0, le=1.0)
 
     class Config:
         arbitrary_types_allowed = True
         extra = "allow"
+
+    @validator("voice_stability", "voice_clarity", "voice_style")
+    def validate_voice_params(cls, v):
+        if not 0.0 <= v <= 1.0:
+            raise ValueError("Voice parameters must be between 0.0 and 1.0")
+        return v

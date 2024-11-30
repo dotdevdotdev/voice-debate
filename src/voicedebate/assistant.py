@@ -120,18 +120,19 @@ class Assistant:
                     return scripted
 
             # Decide whether to use a response starter
+            starter = None
             if self._should_use_response_starter():
                 starter = self._get_random_response_starter()
-                if starter:
-                    # Add the starter as an incomplete assistant message
-                    messages.append({"role": "assistant", "content": starter})
 
             # Generate response using conversation history and system prompt
             response = await asyncio.to_thread(
                 claude.messages.create,
                 model=self.config.model,
                 system=self.config.system_prompt,
-                messages=messages,
+                messages=[
+                    *messages,
+                    *([{"role": "assistant", "content": starter}] if starter else []),
+                ],
                 temperature=self.config.temperature,
                 max_tokens=1000,
             )
@@ -197,5 +198,5 @@ class AssistantManager:
             del self.assistants[name]
 
 
-# Global assistant manager instance
+# Create global instance
 assistant_manager = AssistantManager()
