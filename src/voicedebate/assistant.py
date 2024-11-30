@@ -26,15 +26,17 @@ class Assistant:
     async def generate_response(self, user_input: str) -> str:
         """Generate a response from the AI assistant."""
         try:
-            # Add user message using Anthropic's format
-            self.conversation_history.append({"role": "user", "content": user_input})
+            # Create message for current input
+            current_message = {"role": "user", "content": user_input}
 
             if self.config.provider == "claude":
-                response = await self._generate_claude_response(user_input)
+                # Get response before adding to history to avoid including it in the request
+                response = await self._generate_claude_response(current_message)
             else:
-                response = await self._generate_gpt_response(user_input)
+                response = await self._generate_gpt_response(current_message)
 
-            # Add assistant response using Anthropic's format
+            # Add messages to history after getting response
+            self.conversation_history.append(current_message)
             self.conversation_history.append({"role": "assistant", "content": response})
 
             return response
@@ -61,18 +63,18 @@ class Assistant:
         """Clear conversation history."""
         self.conversation_history = []
 
-    async def _generate_claude_response(self, user_input: str) -> str:
+    async def _generate_claude_response(self, current_message: dict) -> str:
         """Generate response using Claude."""
         try:
-            # The system prompt is now comprehensive and pre-built from the JSON
-            system_prompt = self.config.system_prompt
+            # Combine history with current message
+            messages = self.conversation_history + [current_message]
 
-            # Generate response using entire conversation history
+            # Generate response using conversation history and system prompt
             response = await asyncio.to_thread(
                 claude.messages.create,
                 model=self.config.model,
-                system=system_prompt,
-                messages=self.conversation_history,
+                system=self.config.system_prompt,
+                messages=messages,
                 temperature=self.config.temperature,
                 max_tokens=1000,
             )
@@ -83,15 +85,14 @@ class Assistant:
             logger.error(f"Claude error: {e}")
             raise
 
-    async def _generate_gpt_response(self, user_input: str) -> str:
+    async def _generate_gpt_response(self, current_message: dict) -> str:
         """Generate response using GPT."""
         try:
             # Convert Anthropic format to OpenAI format
             messages = [{"role": "system", "content": self.config.system_prompt}]
 
-            # Add conversation history, converting from Anthropic to OpenAI format
-            # (In this case they're the same, but keeping the conversion logic for clarity)
-            for msg in self.conversation_history:
+            # Add conversation history and current message
+            for msg in self.conversation_history + [current_message]:
                 messages.append({"role": msg["role"], "content": msg["content"]})
 
             response = await openai.ChatCompletion.acreate(

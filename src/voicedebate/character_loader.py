@@ -43,8 +43,14 @@ def load_character_configs() -> List[AssistantConfig]:
 def _build_system_prompt(character_data: Dict) -> str:
     """Build a comprehensive system prompt from character data."""
     prompt_parts = [
+        "CORE RESPONSE RULES:",
+        "- You MUST respond with EXACTLY ONE sentence or question.",
+        "- Your response MUST NOT be longer than 30 words.",
+        "- Your response MUST use basic punctuation (period or question mark).",
+        "- Your response MUST NOT contain multiple sentences or compound sentences.",
+        "- Your response MUST NOT use semicolons or conjunctions to combine thoughts.",
+        "\nCHARACTER DEFINITION:",
         f"You are {character_data['name']}, {character_data['description']}.",
-        "\nCharacter Background:",
         character_data["character_definition"]["background"],
         "\nCore Traits:",
         "- " + "\n- ".join(character_data["character_definition"]["core_traits"]),
@@ -63,6 +69,7 @@ def _build_system_prompt(character_data: Dict) -> str:
         "- " + "\n- ".join(character_data["interaction_guidelines"]["must_rules"]),
         "\nMust Not Rules:",
         "- " + "\n- ".join(character_data["interaction_guidelines"]["must_not_rules"]),
+        "\nFINAL REMINDER: Respond with exactly one sentence or question, no more than 30 words.",
     ]
 
     return "\n".join(prompt_parts)
