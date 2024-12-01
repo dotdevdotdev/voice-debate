@@ -63,6 +63,11 @@ def _build_system_prompt(character_data: Dict) -> str:
         + "\n  - ".join(
             character_data["character_definition"]["speech_style"]["patterns"]
         ),
+        "\nPreferred Response Starters (choose from these when appropriate):",
+        "- "
+        + "\n- ".join(
+            character_data["character_definition"]["speech_style"]["response_starters"]
+        ),
         "\nInteraction Guidelines:",
         f"Primary Goal: {character_data['interaction_guidelines']['primary_goal']}",
         f"Strategy: {character_data['interaction_guidelines']['conversation_strategy']}",

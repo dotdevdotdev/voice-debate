@@ -21,6 +21,7 @@ from kivymd.icon_definitions import md_icons
 from voicedebate.config import config
 from voicedebate.speech import SpeechProcessor, speech_processor
 from voicedebate.assistant import AssistantManager, assistant_manager
+from voicedebate.conversation_logger import conversation_logger
 import uuid
 import random
 from enum import Enum
@@ -231,6 +232,9 @@ class DebateScreen(MDScreen):
     async def _get_and_display_ai_response(self, user_text: str):
         """Get and display AI response in the background."""
         try:
+            # Log user's message
+            conversation_logger.log_turn("User", user_text)
+
             assistant = self.app.assistant_manager.get_assistant(self.current_assistant)
             if assistant:
                 self.add_message(self.current_assistant, "Thinking...")
@@ -239,6 +243,11 @@ class DebateScreen(MDScreen):
                 last_card = self.chat_layout.children[0]
                 if isinstance(last_card, MessageCard):
                     last_card.message = response_text
+
+                # Log assistant's response with model info
+                conversation_logger.log_turn(
+                    self.current_assistant, response_text, model=assistant.config.model
+                )
 
                 audio = await self.app.speech_processor.synthesize_speech(
                     text=response_text,
@@ -326,11 +335,27 @@ class DebateScreen(MDScreen):
 
     def select_assistant(self, name: str):
         """Select an AI assistant."""
-        self.current_assistant = name
-        if self._assistant_dialog:
-            self._assistant_dialog.dismiss()
-        # Automatically start the conversation when assistant is selected
-        asyncio.create_task(self.start_listening())
+        try:
+            # End any existing conversation
+            if self.current_assistant:
+                logger.info(
+                    f"Ending previous conversation with {self.current_assistant}"
+                )
+                conversation_logger.end_conversation()
+
+            self.current_assistant = name
+            if self._assistant_dialog:
+                self._assistant_dialog.dismiss()
+
+            # Start new conversation
+            logger.info(f"Starting new conversation with {name}")
+            conversation_id = conversation_logger.start_conversation(name)
+            logger.info(f"Created conversation with ID: {conversation_id}")
+
+            # Automatically start the conversation
+            asyncio.create_task(self.start_listening())
+        except Exception as e:
+            logger.error(f"Error selecting assistant: {e}")
 
     def clear_chat(self):
         """Clear chat history."""
@@ -360,13 +385,20 @@ class DebateScreen(MDScreen):
 
     async def stop_conversation(self):
         """Stop the ongoing conversation."""
-        if self._recording:
-            await self.stop_listening()
-        if self._current_sound:
-            self._current_sound.stop()
-            self._current_sound = None
-        self.update_state(ConversationState.IDLE)
-        self.current_transcript_label.text = ""
+        try:
+            if self._recording:
+                await self.stop_listening()
+            if self._current_sound:
+                self._current_sound.stop()
+                self._current_sound = None
+            self.update_state(ConversationState.IDLE)
+            self.current_transcript_label.text = ""
+
+            # End conversation logging
+            logger.info("Ending current conversation")
+            conversation_logger.end_conversation()
+        except Exception as e:
+            logger.error(f"Error stopping conversation: {e}")
 
 
 class VoiceDebateApp(MDApp):
@@ -427,20 +459,29 @@ class VoiceDebateApp(MDApp):
 
     def on_stop(self):
         """Called when the application is closing."""
-        # Clean up instance-specific resources
-        temp_path = Path(config.data_dir) / f"temp_audio_{self.instance_id}.wav"
-        if temp_path.exists():
-            temp_path.unlink()
+        try:
+            # End any active conversation
+            if self.root.current_assistant:
+                logger.info("Ending conversation before app close")
+                conversation_logger.end_conversation()
 
-        # Clean up any ongoing recording
-        if hasattr(self.root, "_recording") and self.root._recording:
-            asyncio.create_task(self.root.toggle_recording())
+            # Clean up instance-specific resources
+            temp_path = Path(config.data_dir) / f"temp_audio_{self.instance_id}.wav"
+            if temp_path.exists():
+                temp_path.unlink()
 
-        # Clean up speech processor resources
-        if self.speech_processor.microphone:
-            self.speech_processor.microphone.finish()
-        if self.speech_processor.dg_connection:
-            self.speech_processor.dg_connection.finish()
+            # Clean up any ongoing recording
+            if hasattr(self.root, "_recording") and self.root._recording:
+                asyncio.create_task(self.root.toggle_recording())
+
+            # Clean up speech processor resources
+            if self.speech_processor.microphone:
+                self.speech_processor.microphone.finish()
+            if self.speech_processor.dg_connection:
+                self.speech_processor.dg_connection.finish()
+
+        except Exception as e:
+            logger.error(f"Error during app cleanup: {e}")
 
         return True
 

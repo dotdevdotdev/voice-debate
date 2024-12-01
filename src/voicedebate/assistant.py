@@ -113,31 +113,23 @@ class Assistant:
         try:
             messages = self.conversation_history + [current_message]
 
-            # Decide whether to use a scripted response
-            if self._should_use_scripted_response():
-                scripted = self._get_random_scripted_response()
-                if scripted:
-                    return scripted
+            # Add context about previous turns to help maintain conversation flow
+            context_prompt = "\nRECENT CONTEXT:\n"
+            for msg in self.conversation_history[-2:]:  # Last 2 messages
+                context_prompt += f"- {msg['role']}: {msg['content']}\n"
 
-            # Decide whether to use a response starter
-            starter = None
-            if self._should_use_response_starter():
-                starter = self._get_random_response_starter()
+            system_prompt = self.config.system_prompt + context_prompt
 
-            # Generate response using conversation history and system prompt
             response = await asyncio.to_thread(
                 claude.messages.create,
                 model=self.config.model,
-                system=self.config.system_prompt,
-                messages=[
-                    *messages,
-                    *([{"role": "assistant", "content": starter}] if starter else []),
-                ],
+                system=system_prompt,
+                messages=messages,
                 temperature=self.config.temperature,
                 max_tokens=1000,
             )
 
-            return response.content[0].text
+            return response.content[0].text.strip()
 
         except Exception as e:
             logger.error(f"Claude error: {e}")
